@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>START JUDGE PRO</title>
+<style>
+:root{color-scheme:dark;--bg:#07121e;--panel:#102235;--line:#28465e;--gold:#f3c969;--text:#f3f7fb;--muted:#a8bdcf}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#17324a,#07121e 70%);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);padding:14px}
+main{max-width:850px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}.brand{font-weight:900;letter-spacing:.08em;font-size:1.15rem}.brand span{color:var(--gold)}.stats{font-size:.85rem;color:var(--muted);text-align:right}
+.card{background:linear-gradient(145deg,#12283b,#0b1b2b);border:1px solid var(--line);border-radius:18px;padding:14px;margin:12px 0;box-shadow:0 12px 32px #0003}
+h1{font-size:1.2rem;margin:0 0 6px}p{color:var(--muted);margin:5px 0 12px;font-size:.92rem}
+canvas{display:block;width:100%;height:auto;border-radius:13px;background:#182c3c;border:1px solid #35536a;touch-action:manipulation}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+button{font:inherit;font-weight:700;border:1px solid #3c5b74;background:#1b3449;color:white;border-radius:12px;padding:12px 14px;min-height:46px;cursor:pointer}
+button.primary{background:var(--gold);color:#18202a;border-color:var(--gold)}button:disabled{opacity:.45;cursor:not-allowed}
+.judges{display:grid;grid-template-columns:1fr 1fr;gap:10px}.lanes{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:9px}
+.lane{padding:12px 4px}.lane.selected{background:#f3c969;color:#18202a;border-color:#ffe39a}
+.result{padding:12px;border-radius:12px;background:#0a1724;border:1px solid var(--line);margin-top:10px}.good{color:#8ee0b0}.bad{color:#ff9b91}
+.small{font-size:.78rem;color:var(--muted)}.hidden{display:none}
+@media(min-width:650px){body{padding:24px}.card{padding:18px}.lanes{grid-template-columns:repeat(8,1fr)}}
+</style>
+</head>
+<body><main>
+<div class="top"><div class="brand">🏁 START <span>JUDGE PRO</span></div><div class="stats" id="stats">ROUND 1 / 10<br>正解 0</div></div>
+<section class="card">
+<h1>スタート判定</h1>
+<p>横からの固定カメラ。映像と音だけで判断しよう。まずはスタート映像を再生！</p>
+<canvas id="scene" width="840" height="430" aria-label="横から見た陸上スタート映像"></canvas>
+<div class="controls">
+<button class="primary" id="start">▶ スタート映像</button>
+<button id="replay" disabled>↻ リプレイ</button>
+<button id="sound">🔊 音 ON</button>
+</div>
+<div class="small" id="status" style="margin-top:9px">待機中：選手が「Set」の姿勢に入ります。</div>
+</section>
+<section class="card" id="decision">
+<h1>あなたの判定は？</h1>
+<p>映像を見て、フライングの有無を選択。フライングありならレーンも指定。</p>
+<div class="judges">
+<button class="primary" id="normal">正常スタート</button>
+<button id="false">フライングあり</button>
+</div>
+<div id="laneBox" class="hidden"><div class="small" style="margin-top:12px">フライングしたレーン</div><div class="lanes" id="lanes"></div></div>
+<div class="controls"><button class="primary" id="submit" disabled>判定を確定</button><button id="next" class="hidden">次のレース →</button></div>
+<div id="result" class="result hidden"></div>
+</section>
+<section class="small">※学習・ゲーム用の簡略シミュレーションです。公式競技の判定や審判資格の代替ではありません。反応時間の表示だけで公式な不正スタート判定を確定するものではありません。</section>
+</main>
+<script>
+(()=>{
+const canvas=document.getElementById('scene'),ctx=canvas.getContext('2d');
+const $=id=>document.getElementById(id);
+let round=1,score=0,played=false,choice=null,selectedLane=null,anim=null,audioOn=true,audioCtx=null,raf=null;
+let scenario={lane:4,early:false,earlyTime:-.12,seed:1};
+const colors=['#e6c16e','#65c9b7','#f08b83','#a9a1f4','#e3e9f0','#f0a85f','#85b6ed','#d78dbd'];
+function rng(seed){let x=seed;return()=>{x=(x*1664525+1013904223)>>>0;return x/4294967296}}
+function makeScenario(){let r=rng(Date.now()+round*9127);scenario={lane:1+Math.floor(r()*8),early:r()<.58,earlyTime:-(.08+r()*.16),seed:round};}
+function draw(t=0,mode='idle'){
+ let w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);
+ // stadium sky and stands
+ let g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,'#162e43');g.addColorStop(.55,'#25445a');g.addColorStop(1,'#0d1b29');ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+ ctx.fillStyle='#2c485c';ctx.beginPath();ctx.moveTo(0,65);ctx.lineTo(w,45);ctx.lineTo(w,170);ctx.lineTo(0,190);ctx.fill();
+ for(let i=0;i<270;i++){let x=(i*67)%w,y=65+((i*31)%95);ctx.fillStyle=['#9db2c3','#e5c27b','#d98d86','#6caeaa'][i%4];ctx.globalAlpha=.35;ctx.fillRect(x,y,3,3);ctx.globalAlpha=1}
+ // track
+ for(let lane=0;lane<8;lane++){let y=188+lane*29;ctx.fillStyle=lane%2?'#b34f43':'#a8463c';ctx.fillRect(0,y,w,28);ctx.strokeStyle='#f1c7bb';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(0,y+28);ctx.lineTo(w,y+28);ctx.stroke();}
+ // start line
+ ctx.strokeStyle='#fff';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(735,185);ctx.lineTo(735,420);ctx.stroke();
+ ctx.fillStyle='#fff';ctx.font='bold 16px system-ui';ctx.fillText('START',744,203);
+ // lanes and runners
+ for(let i=0;i<8;i++){
+  const lane=i+1,y=201+i*29;
+  ctx.fillStyle='#fff';ctx.font='bold 15px system-ui';ctx.fillText(String(lane),14,y+16);
+  let phase=0;
+  if(mode==='set')phase=.06;
+  if(mode==='run'){
+    let elapsed=t;
+    const start=(scenario.early&&lane===scenario.lane)?scenario.earlyTime:0;
+    phase=Math.max(0,Math.min(1,(elapsed-start)/.75));
+  }
+  drawRunner(180+i*3,y+14,phase,colors[i],lane,mode);
+ }
+ // camera frame label
+ ctx.fillStyle='#06111cbb';roundRect(14,12,220,31,8);ctx.fill();
+ ctx.fillStyle='#d9e6ef';ctx.font='12px system-ui';ctx.fillText('CAM 01  ·  SIDE VIEW',26,32);
+ if(mode==='idle'||mode==='set'){
+  ctx.fillStyle='#07111dcc';roundRect(290,12,260,31,8);ctx.fill();
+  ctx.fillStyle='#f3c969';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.fillText(mode==='set'?'SET POSITION':'READY FOR START',420,32);ctx.textAlign='left';
+ }
+}
+function roundRect(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
+function drawRunner(x,y,p,c,lane,mode){
+ // stylized high-quality 2D side-view sprinter with head/torso/limbs
+ ctx.save();ctx.translate(x,y);
+ // blocks
+ ctx.fillStyle='#283a48';ctx.fillRect(-31,7,21,6);ctx.fillRect(-14,8,12,5);
+ ctx.fillStyle='#d5dce2';ctx.fillRect(-29,4,8,5);ctx.fillRect(-13,5,8,5);
+ let lean=mode==='set'?-.04:0;
+ let run= p>0;
+ let swing=Math.sin(p*9.5+lane*.22);
+ let bob=run?Math.sin(p*19+lane)*2.4:0;
+ ctx.translate(0,bob);
+ // legs, back and front
+ let hipX=2,hipY=-4;
+ let leg1=run?swing:0,leg2=run?-swing:0;
+ ctx.lineCap='round';ctx.lineJoin='round';
+ ctx.strokeStyle='#202b38';ctx.lineWidth=8;
+ ctx.beginPath();ctx.moveTo(hipX,hipY);ctx.lineTo(hipX-14+leg1*15,hipY+9);ctx.lineTo(hipX-23+leg1*20,hipY+15);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(hipX,hipY);ctx.lineTo(hipX+13+leg2*13,hipY+7);ctx.lineTo(hipX+21+leg2*18,hipY+14);ctx.stroke();
+ // shoes
+ ctx.strokeStyle='#f5f5f0';ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(hipX-23+leg1*20,hipY+15);ctx.lineTo(hipX-15+leg1*20,hipY+15);ctx.moveTo(hipX+21+leg2*18,hipY+14);ctx.lineTo(hipX+29+leg2*18,hipY+14);ctx.stroke();
+ // torso
+ ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(-4,-20);ctx.quadraticCurveTo(7,-22,13,-13);ctx.lineTo(5,-2);ctx.lineTo(-7,-4);ctx.closePath();ctx.fill();
+ // arm swings
+ ctx.strokeStyle='#e0b08b';ctx.lineWidth=6;
+ ctx.beginPath();ctx.moveTo(5,-17);ctx.lineTo(14+swing*8,-10);ctx.lineTo(9+swing*12,-5);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(-1,-17);ctx.lineTo(-9-swing*8,-12);ctx.lineTo(-4-swing*12,-6);ctx.stroke();
+ // head and hair
+ ctx.fillStyle='#e8bd98';ctx.beginPath();ctx.arc(1,-27,7,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#28303a';ctx.beginPath();ctx.arc(0,-30,6.5,Math.PI,Math.PI*2);ctx.fill();
+ // bib
+ ctx.fillStyle='#f8f7ef';ctx.fillRect(-1,-17,9,7);ctx.fillStyle='#263344';ctx.font='bold 5px system-ui';ctx.fillText(String(lane),1,-12);
+ ctx.restore();
+}
+function sound(freq=850,dur=.12,type='sine',vol=.18){
+ if(!audioOn)return;
+ try{audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();let o=audioCtx.createOscillator(),g=audioCtx.createGain();o.type=type;o.frequency.setValueAtTime(freq,audioCtx.currentTime);g.gain.setValueAtTime(vol,audioCtx.currentTime);g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+dur);o.connect(g);g.connect(audioCtx.destination);o.start();o.stop(audioCtx.currentTime+dur)}catch(e){}
+}
+function gun(){if(!audioOn)return;try{audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();let n=audioCtx.createBuffer(1,audioCtx.sampleRate*.16,audioCtx.sampleRate),d=n.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2);let s=audioCtx.createBufferSource(),g=audioCtx.createGain();s.buffer=n;g.gain.value=.45;s.connect(g);g.connect(audioCtx.destination);s.start()}catch(e){sound(160,.16,'sawtooth',.3)}}
+function setStats(){$('stats').innerHTML=`ROUND ${Math.min(round,10)} / 10<br>正解 ${score}`;}
+function startRace(){
+ if(played)return;played=true;$('start').disabled=true;$('replay').disabled=true;$('submit').disabled=true;
+ $('status').textContent='「On your marks」…';draw(0,'idle');sound(620,.18,'sine',.12);
+ setTimeout(()=>{if(!played)return;$('status').textContent='「Set」…';draw(0,'set');sound(740,.2,'sine',.12)},850);
+ setTimeout(()=>{if(!played)return;$('status').textContent='号砲！映像を確認しよう。';gun();let begin=performance.now();function loop(now){if(!played)return;let t=(now-begin)/1000;draw(t,'run');if(t<2.2)raf=requestAnimationFrame(loop);else{$('status').textContent='映像終了。判定を選択してね。';$('submit').disabled=false;$('replay').disabled=false;}}raf=requestAnimationFrame(loop)},1700);
+}
+function replayRace(){played=false;cancelAnimationFrame(raf);$('start').disabled=false;$('replay').disabled=true;$('submit').disabled=true;choice=null;selectedLane=null;$('normal').classList.remove('primary');$('false').classList.remove('primary');$('laneBox').classList.add('hidden');$('result').classList.add('hidden');$('next').classList.add('hidden');$('status').textContent='リプレイ準備完了。';draw(0,'idle');}
+function choose(c){choice=c;selectedLane=null;$('normal').classList.toggle('primary',c==='normal');$('false').classList.toggle('primary',c==='false');$('laneBox').classList.toggle('hidden',c!=='false');$('submit').disabled=!(c==='normal'||(c==='false'&&selectedLane));}
+function makeLaneButtons(){let box=$('lanes');box.innerHTML='';for(let i=1;i<=8;i++){let b=document.createElement('button');b.textContent=i;b.className='lane';b.onclick=()=>{selectedLane=i;[...box.children].forEach(x=>x.classList.remove('selected'));b.classList.add('selected');$('submit').disabled=false};box.appendChild(b)}}
+function submit(){
+ if(!choice)return;let correct=choice==='false'?(scenario.early&&selectedLane===scenario.lane):!scenario.early;
+ if(correct)score++;
+ $('result').classList.remove('hidden');$('result').innerHTML=correct?'<strong class="good">判定正解！</strong><br>よく観察できたね。':'<strong class="bad">判定不正解</strong><br>'+ (scenario.early?`正解は ${scenario.lane} レーンのフライング。`:'今回は全員正常スタート。')+'映像と号砲のタイミングをもう一度確認しよう。';
+ $('submit').disabled=true;$('next').classList.remove('hidden');$('next').textContent=round>=10?'結果を見る →':'次のレース →';$('normal').disabled=true;$('false').disabled=true;[...$('lanes').children].forEach(b=>b.disabled=true);setStats();
+}
+function next(){
+ if(round>=10){$('result').innerHTML=`<h2>大会終了！</h2><strong>正解 ${score} / 10</strong><p>${score>=9?'A級審判！':score>=7?'上級審判':'審判見習い'}として大会を終えた。もう一度挑戦して精度を上げよう。</p><button class="primary" onclick="location.reload()">もう一度挑戦</button>`;$('next').classList.add('hidden');return}
+ round++;makeScenario();played=false;choice=null;selectedLane=null;$('start').disabled=false;$('replay').disabled=true;$('normal').disabled=false;$('false').disabled=false;$('normal').classList.remove('primary');$('false').classList.remove('primary');$('laneBox').classList.add('hidden');$('submit').disabled=true;$('result').classList.add('hidden');$('next').classList.add('hidden');$('status').textContent='待機中：次のレースです。';makeLaneButtons();draw();setStats();
+}
+$('start').onclick=startRace;$('replay').onclick=replayRace;$('normal').onclick=()=>choose('normal');$('false').onclick=()=>choose('false');$('submit').onclick=submit;$('next').onclick=next;
+$('sound').onclick=()=>{audioOn=!audioOn;$('sound').textContent=audioOn?'🔊 音 ON':'🔇 音 OFF';if(audioOn)sound(700,.1)};
+makeScenario();makeLaneButtons();draw();setStats();
+})();
+</script></body></html>
